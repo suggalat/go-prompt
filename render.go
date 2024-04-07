@@ -202,8 +202,9 @@ func (r *Render) Render(buffer *Buffer, completion *CompletionManager) {
 	r.out.EraseDown()
 
 	cursor = r.backward(cursor, runewidth.StringWidth(line)-buffer.DisplayCursorPosition())
-
-	r.renderCompletion(buffer, completion)
+	if displaySuggestions {
+		r.renderCompletion(buffer, completion)
+	}
 	if suggest, ok := completion.GetSelectedSuggestion(); ok {
 		cursor = r.backward(cursor, runewidth.StringWidth(buffer.Document().GetWordBeforeCursorUntilSeparator(completion.wordSeparator)))
 

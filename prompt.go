@@ -21,6 +21,8 @@ type ExitChecker func(in string, breakline bool) bool
 // Completer should return the suggest item from Document.
 type Completer func(Document) []Suggest
 
+var displaySuggestions bool = false
+
 // Prompt is core struct of go-prompt.
 type Prompt struct {
 	in                ConsoleParser
@@ -96,7 +98,12 @@ func (p *Prompt) Run() {
 				go p.readBuffer(bufCh, stopReadBufCh)
 				go p.handleSignals(exitCh, winSizeCh, stopHandleSignalCh)
 			} else {
+				p.completion.Update(*p.buf.Document())
 				p.renderer.Render(p.buf, p.completion)
+				if displaySuggestions {
+					// Revert default display suggestions setting.
+					displaySuggestions = false
+				}
 			}
 		case w := <-winSizeCh:
 			p.renderer.UpdateWinSize(w)
@@ -120,7 +127,7 @@ func (p *Prompt) feed(b []byte) (shouldExit bool, exec *Exec) {
 
 	switch key {
 	case QuestionMark:
-		p.completion.Update(*p.buf.Document())
+		displaySuggestions = true
 	case Enter, ControlJ, ControlM:
 		p.renderer.BreakLine(p.buf)
 
@@ -137,12 +144,14 @@ func (p *Prompt) feed(b []byte) (shouldExit bool, exec *Exec) {
 		if !completing { // Don't use p.completion.Completing() because it takes double operation when switch to selected=-1.
 			if newBuf, changed := p.history.Older(p.buf); changed {
 				p.buf = newBuf
+				displaySuggestions = true
 			}
 		}
 	case Down, ControlN:
 		if !completing { // Don't use p.completion.Completing() because it takes double operation when switch to selected=-1.
 			if newBuf, changed := p.history.Newer(p.buf); changed {
 				p.buf = newBuf
+				displaySuggestions = true
 			}
 			return
 		}
@@ -169,6 +178,7 @@ func (p *Prompt) handleCompletionKeyBinding(key Key, completing bool) {
 			p.completion.Next()
 		}
 	case Tab, ControlI:
+		displaySuggestions = true
 		p.completion.Next()
 	case Up:
 		if completing {
@@ -279,7 +289,7 @@ func (p *Prompt) readBuffer(bufCh chan []byte, stopCh chan struct{}) {
 				bufCh <- b
 			}
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 
