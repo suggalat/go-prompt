@@ -96,7 +96,6 @@ func (p *Prompt) Run() {
 				go p.readBuffer(bufCh, stopReadBufCh)
 				go p.handleSignals(exitCh, winSizeCh, stopHandleSignalCh)
 			} else {
-				p.completion.Update(*p.buf.Document())
 				p.renderer.Render(p.buf, p.completion)
 			}
 		case w := <-winSizeCh:
@@ -120,6 +119,8 @@ func (p *Prompt) feed(b []byte) (shouldExit bool, exec *Exec) {
 	p.handleCompletionKeyBinding(key, completing)
 
 	switch key {
+	case QuestionMark:
+		p.completion.Update(*p.buf.Document())
 	case Enter, ControlJ, ControlM:
 		p.renderer.BreakLine(p.buf)
 
