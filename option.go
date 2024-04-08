@@ -165,6 +165,13 @@ func OptionSelectedDescriptionTextColor(x Color) Option {
 	}
 }
 
+func OptionDisplaySuggestions(displaySuggestions bool) Option {
+	return func(p *Prompt) error {
+		p.renderer.displaySuggestions = displaySuggestions
+		return nil
+	}
+}
+
 // OptionSelectedDescriptionBGColor to change a background color of description which is selected inside suggestions drop down box.
 func OptionSelectedDescriptionBGColor(x Color) Option {
 	return func(p *Prompt) error {
@@ -293,6 +300,7 @@ func New(executor Executor, completer Completer, opts ...Option) *Prompt {
 			selectedDescriptionBGColor:   Cyan,
 			scrollbarThumbColor:          DarkGray,
 			scrollbarBGColor:             Cyan,
+			displaySuggestions:           true,
 		},
 		buf:         NewBuffer(),
 		executor:    executor,

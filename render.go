@@ -17,8 +17,8 @@ type Render struct {
 	row                uint16
 	col                uint16
 
-	previousCursor int
-
+	previousCursor     int
+	displaySuggestions bool
 	// colors,
 	prefixTextColor              Color
 	prefixBGColor                Color
@@ -202,7 +202,7 @@ func (r *Render) Render(buffer *Buffer, completion *CompletionManager) {
 	r.out.EraseDown()
 
 	cursor = r.backward(cursor, runewidth.StringWidth(line)-buffer.DisplayCursorPosition())
-	if displaySuggestions {
+	if r.displaySuggestions || tmpDisplaySuggestions {
 		r.renderCompletion(buffer, completion)
 	}
 	if suggest, ok := completion.GetSelectedSuggestion(); ok {
