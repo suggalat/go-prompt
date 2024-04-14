@@ -21,7 +21,9 @@ type ExitChecker func(in string, breakline bool) bool
 // Completer should return the suggest item from Document.
 type Completer func(Document) []Suggest
 
-var tmpDisplaySuggestions bool = false
+var tmpAutoSuggestionsEnabled bool = false
+var interactiveSearchPrompt = "(reverse-i-search)`%s':"
+var tmpMainPrefix string
 
 // Prompt is core struct of go-prompt.
 type Prompt struct {
@@ -70,11 +72,13 @@ func (p *Prompt) Run() {
 	for {
 		select {
 		case b := <-bufCh:
-			if shouldExit, e := p.feed(b); shouldExit {
+			if shouldExit, e, isProcessInteractiveSearch := p.feed(b); shouldExit {
 				p.renderer.BreakLine(p.buf)
 				stopReadBufCh <- struct{}{}
 				stopHandleSignalCh <- struct{}{}
 				return
+			} else if isProcessInteractiveSearch {
+				p.renderer.RenderSearch(p.buf, p.completion, p.history.histories)
 			} else if e != nil {
 				// Stop goroutine to run readBuffer function
 				stopReadBufCh <- struct{}{}
@@ -84,7 +88,6 @@ func (p *Prompt) Run() {
 				// Reset to Blocking mode because returned EAGAIN when still set non-blocking mode.
 				debug.AssertNoError(p.in.TearDown())
 				p.executor(e.input)
-
 				p.completion.Update(*p.buf.Document())
 
 				p.renderer.Render(p.buf, p.completion)
@@ -100,8 +103,8 @@ func (p *Prompt) Run() {
 			} else {
 				p.completion.Update(*p.buf.Document())
 				p.renderer.Render(p.buf, p.completion)
-				if tmpDisplaySuggestions {
-					tmpDisplaySuggestions = false
+				if tmpAutoSuggestionsEnabled {
+					tmpAutoSuggestionsEnabled = false
 				}
 			}
 		case w := <-winSizeCh:
@@ -112,40 +115,73 @@ func (p *Prompt) Run() {
 			p.tearDown()
 			os.Exit(code)
 		default:
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(2 * time.Millisecond)
 		}
 	}
 }
 
-func (p *Prompt) feed(b []byte) (shouldExit bool, exec *Exec) {
+func (p *Prompt) feed(b []byte) (shouldExit bool, exec *Exec, isProcessInteractiveSearch bool) {
 	key := GetKey(b)
 	p.buf.lastKeyStroke = key
 	// completion
 	completing := p.completion.Completing()
 	p.handleCompletionKeyBinding(key, completing)
-
+	isProcessInteractiveSearch = p.renderer.isInteractiveSearch
 	switch key {
 	case QuestionMark:
-		tmpDisplaySuggestions = true
+		tmpAutoSuggestionsEnabled = true
+	case ControlR:
+		p.renderer.isInteractiveSearch = true
+		isProcessInteractiveSearch = true
 	case Enter, ControlJ, ControlM:
+		isProcessInteractiveSearch = false
+		if p.renderer.isInteractiveSearch {
+			p.renderer.isInteractiveSearch = false
+			p.revertToMainPrefix()
+			p.buf = NewBuffer()
+			if p.renderer.lastMatchedIndex != -1 {
+				p.buf.InsertText(p.history.histories[p.renderer.lastMatchedIndex], false, true)
+			}
+			p.renderer.lastMatchedIndex = -1
+		}
 		p.renderer.BreakLine(p.buf)
-
 		exec = &Exec{input: p.buf.Text()}
 		p.buf = NewBuffer()
 		if exec.input != "" {
 			p.history.Add(exec.input)
+			WriteCommandsToFile(p.history.histories, p.renderer.cmdHistoryFile)
 		}
 	case ControlC:
+		isProcessInteractiveSearch = false
+		if p.renderer.isInteractiveSearch {
+			p.renderer.isInteractiveSearch = false
+			p.renderer.lastMatchedIndex = -1
+			p.revertToMainPrefix()
+		}
 		p.renderer.BreakLine(p.buf)
 		p.buf = NewBuffer()
 		p.history.Clear()
 	case Up, ControlP:
+		isProcessInteractiveSearch = false
+		if p.renderer.isInteractiveSearch {
+			p.renderer.isInteractiveSearch = false
+			p.renderer.lastMatchedIndex = -1
+			p.revertToMainPrefix()
+			p.buf = NewBuffer()
+		}
 		if !completing { // Don't use p.completion.Completing() because it takes double operation when switch to selected=-1.
 			if newBuf, changed := p.history.Older(p.buf); changed {
 				p.buf = newBuf
 			}
 		}
 	case Down, ControlN:
+		isProcessInteractiveSearch = false
+		if p.renderer.isInteractiveSearch {
+			p.renderer.isInteractiveSearch = false
+			p.renderer.lastMatchedIndex = -1
+			p.revertToMainPrefix()
+			p.buf = NewBuffer()
+		}
 		if !completing { // Don't use p.completion.Completing() because it takes double operation when switch to selected=-1.
 			if newBuf, changed := p.history.Newer(p.buf); changed {
 				p.buf = newBuf
@@ -157,7 +193,20 @@ func (p *Prompt) feed(b []byte) (shouldExit bool, exec *Exec) {
 			shouldExit = true
 			return
 		}
+	case Tab, Right, Left:
+		isProcessInteractiveSearch = false
+		if p.renderer.isInteractiveSearch {
+			p.renderer.isInteractiveSearch = false
+			p.revertToMainPrefix()
+			p.buf = NewBuffer()
+			if p.renderer.lastMatchedIndex != -1 {
+				p.buf.InsertText(p.history.histories[p.renderer.lastMatchedIndex], false, true)
+			}
+			p.renderer.lastMatchedIndex = -1
+		}
 	case NotDefined:
+		// Matching algorithm has to be invoked on every input key stroke.
+		p.renderer.lastMatchedIndex = -1
 		if p.handleASCIICodeBinding(b) {
 			return
 		}
@@ -167,7 +216,6 @@ func (p *Prompt) feed(b []byte) (shouldExit bool, exec *Exec) {
 	shouldExit = p.handleKeyBinding(key)
 	return
 }
-
 func (p *Prompt) handleCompletionKeyBinding(key Key, completing bool) {
 	switch key {
 	case Down:
@@ -175,8 +223,10 @@ func (p *Prompt) handleCompletionKeyBinding(key Key, completing bool) {
 			p.completion.Next()
 		}
 	case Tab, ControlI:
-		tmpDisplaySuggestions = true
-		p.completion.Next()
+		if !p.renderer.isInteractiveSearch {
+			tmpAutoSuggestionsEnabled = true
+			p.completion.Next()
+		}
 	case Up:
 		if completing {
 			p.completion.Previous()
@@ -247,7 +297,6 @@ func (p *Prompt) Input() string {
 	if p.completion.showAtStart {
 		p.completion.Update(*p.buf.Document())
 	}
-
 	p.renderer.Render(p.buf, p.completion)
 	bufCh := make(chan []byte, 128)
 	stopReadBufCh := make(chan struct{})
@@ -256,7 +305,7 @@ func (p *Prompt) Input() string {
 	for {
 		select {
 		case b := <-bufCh:
-			if shouldExit, e := p.feed(b); shouldExit {
+			if shouldExit, e, _ := p.feed(b); shouldExit {
 				p.renderer.BreakLine(p.buf)
 				stopReadBufCh <- struct{}{}
 				return ""
@@ -287,7 +336,9 @@ func (p *Prompt) readBuffer(bufCh chan []byte, stopCh chan struct{}) {
 				for i, e := range b {
 					switch GetKey([]byte{e}) {
 					case Enter, ControlJ, ControlM:
-						bufCh <- b[start:i]
+						if (i - start) != 0 {
+							bufCh <- b[start:i]
+						}
 						bufCh <- []byte{e}
 						start = i + 1
 					}
@@ -296,7 +347,7 @@ func (p *Prompt) readBuffer(bufCh chan []byte, stopCh chan struct{}) {
 				bufCh <- b[start:]
 			}
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
@@ -311,4 +362,9 @@ func (p *Prompt) tearDown() {
 		debug.AssertNoError(p.in.TearDown())
 	}
 	p.renderer.TearDown()
+}
+func (p *Prompt) revertToMainPrefix() {
+	p.renderer.prefix = tmpMainPrefix
+	p.renderer.move(p.renderer.previousCursor, 0)
+	p.renderer.renderPrefix()
 }
